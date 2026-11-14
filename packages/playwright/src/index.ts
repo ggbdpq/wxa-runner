@@ -11,6 +11,7 @@
 
 import path from 'path';
 import { expect as baseExpect, test as base } from '@playwright/test';
+import type { Page } from '@playwright/test';
 import { DevServer } from '@open-wxa/wxa-runner-core';
 import { withEagerSourcePositions } from './launchOptions';
 import { miniProgramMatchers } from './matchers';
@@ -38,7 +39,17 @@ export interface WxaOptions {
    * 'window' 在新窗口里打开，网页是顶层页面，Cookie 能正常使用，用 miniProgram.webView() 拿到网页窗口。可以按用例修改
    */
   wxaWebView: 'iframe' | 'window';
+  /**
+   * 'window' 模式下 H5 窗口的 User-Agent。默认是微信内置浏览器的 UA，并自动补上 `miniProgram/<appid>`：
+   * 有些 H5 先看 UA 里有没有这一段，没有就跳去微信授权页，所以在模拟器里补上。
+   * 传 null 关掉，或传别的值完全自己控制
+   */
+  wxaWebViewUserAgent: string | null;
 }
+
+/** 微信内置浏览器的 UA：真正打开窗口时还会拼上 `miniProgram/<appid>`，网关靠它判断是不是小程序里的 web-view */
+export const WECHAT_WEBVIEW_USER_AGENT =
+  'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 MicroMessenger/8.0.50(0x18003231) NetType/WIFI Language/zh_CN';
 
 export interface WxaFixtures {
   /** 当前用例的小程序：每个用例一个新的浏览器上下文，Storage、页面栈互不影响 */
@@ -53,13 +64,14 @@ export interface WxaWorkerFixtures {
 const ERRORS_HINT = '小程序有运行时错误，或调用了未实现的 wx API（用到的请 mock）。有意触发错误的用例可以 test.use({ wxaCheckErrors: false })';
 
 export const test = base.extend<
-  WxaFixtures & Pick<WxaOptions, 'wxaCheckErrors' | 'wxaWebView'>,
+  WxaFixtures & Pick<WxaOptions, 'wxaCheckErrors' | 'wxaWebView' | 'wxaWebViewUserAgent'>,
   WxaWorkerFixtures & Pick<WxaOptions, 'wxaProject' | 'wxaServerOptions'>
 >({
   wxaProject: ['.', { scope: 'worker', option: true }],
   wxaServerOptions: [{}, { scope: 'worker', option: true }],
   wxaCheckErrors: [true, { option: true }],
   wxaWebView: ['iframe', { option: true }],
+  wxaWebViewUserAgent: [WECHAT_WEBVIEW_USER_AGENT, { option: true }],
 
   // 配置文件 use 里的 launchOptions 照常传进来；用例文件里 test.use({ launchOptions }) 会整个替换掉这里，不再追加
   launchOptions: [async ({ launchOptions, browserName }, use) => {
@@ -74,7 +86,31 @@ export const test = base.extend<
     await server.close();
   }, { scope: 'worker', timeout: 60000 }],
 
-  miniProgram: async ({ page, wxaServer, wxaCheckErrors, wxaWebView }, use) => {
+  miniProgram: async ({ page, wxaServer, wxaCheckErrors, wxaWebView, wxaWebViewUserAgent, browserName }, use) => {
+    if (wxaWebView === 'window') {
+      const context = page.context();
+      // 微信里 webview 的 UA 带 miniProgram/<appid>，H5 常按它判断是不是小程序里打开的：
+      // 没有这一段可能直接跳去微信授权页
+      const userAgent =
+        wxaWebViewUserAgent === null
+          ? null
+          : wxaWebViewUserAgent === WECHAT_WEBVIEW_USER_AGENT
+            ? `${WECHAT_WEBVIEW_USER_AGENT} miniProgram/${wxaServer.project.runtimeAppid}`
+            : wxaWebViewUserAgent;
+      if (userAgent && browserName === 'chromium') {
+        const applyUserAgent = async (target: Page) => {
+          try {
+            const cdp = await context.newCDPSession(target);
+            await cdp.send('Emulation.setUserAgentOverride', { userAgent });
+          } catch {
+            // 页面已经关了
+          }
+        };
+        context.on('page', target => {
+          if (target !== page) void applyUserAgent(target);
+        });
+      }
+    }
     const session = await createMiniProgram(page, {
       baseURL: wxaServer.url,
       listPages: () => wxaServer.builder.build().then(build => build.pages, () => null),
