@@ -5,6 +5,19 @@
  */
 
 export { DevServer, DEFAULT_DEVICE, findRuntimeDir, listen, LOCAL_HOST_OF_ANY_ADDRESS } from './server/DevServer';
+export { pullDevtoolsStorage } from './server/developerTicket';
+export {
+  clearSessionStorage,
+  DEFAULT_SESSION_PROFILE,
+  listSessionProfiles,
+  readSessionStorage,
+  SESSION_DIR_ENV,
+  sessionFilePath,
+  sessionRootDir,
+  sessionRouter,
+  writeSessionStorage
+} from './server/sessionStore';
+export type { SessionProfileInfo, SessionRecord, SessionSource } from './server/sessionStore';
 export { bundleSetup, findSetupFile } from './server/setup';
 export { findConfigFile, loadConfigFile, CONFIG_FILE_NAMES } from './server/config';
 export type { WxaConfig } from './server/config';

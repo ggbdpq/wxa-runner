@@ -100,14 +100,18 @@ export function devtoolsLoginRouter(
   return router;
 }
 
-function onlyLoopback(req: Request, res: Response, next: NextFunction) {
-  // req.hostname 去掉端口时能正确处理 IPv6 的 [::1]:3000
-  if (!LOOPBACK_ADDRESSES.includes(req.socket.remoteAddress || '') || !LOOPBACK_HOSTS.includes(req.hostname)) {
-    res.status(403).json({ error: '开发者登录态接口只允许本机访问' });
-    return;
-  }
-  next();
+export function createLoopbackGuard(message: string) {
+  return (req: Request, res: Response, next: NextFunction) => {
+    // req.hostname 去掉端口时能正确处理 IPv6 的 [::1]:3000
+    if (!LOOPBACK_ADDRESSES.includes(req.socket.remoteAddress || '') || !LOOPBACK_HOSTS.includes(req.hostname)) {
+      res.status(403).json({ error: message });
+      return;
+    }
+    next();
+  };
 }
+
+const onlyLoopback = createLoopbackGuard('开发者登录态接口只允许本机访问');
 
 function respond(action: (req: Request) => Promise<object>) {
   return async (req: Request, res: Response) => {

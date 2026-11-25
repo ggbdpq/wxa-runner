@@ -38,7 +38,7 @@ describe.skipIf(!ready)('DevServer', () => {
 
   it('宿主页面加载浏览器端运行时', async () => {
     const html = await (await get('/')).text();
-    expect(html).toContain('<script src="/__wxa__/runtime/host.js"></script>');
+    expect(html).toMatch(/<script src="\/__wxa__\/runtime\/host\.js(\?v=\d+)?"><\/script>/);
     expect((await get('/__wxa__/runtime/host.js')).status).toBe(200);
   });
 

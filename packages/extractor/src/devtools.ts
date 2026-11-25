@@ -5,6 +5,7 @@
  * 两者都可以用环境变量覆盖，便于 CI 或非标准安装位置。
  */
 
+import { execFileSync } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -21,6 +22,51 @@ const PACKAGE_LAYOUTS = [
   'resources/app.asar.unpacked',
   'package.nw'
 ];
+
+let cachedWindowsRegistryDirs: string[] | null = null;
+
+/**
+ * 从 Windows 卸载项注册表的 InstallLocation / DisplayIcon / UninstallString 输出中提取安装目录。
+ * 值可能带双引号或图标索引后缀（如 `"D:\...\微信开发者工具.exe",0`），指向可执行文件时取其父目录
+ */
+export function parseWindowsRegistryInstallDirs(output: string): string[] {
+  const dirs: string[] = [];
+  for (const rawLine of output.split(/\r?\n/)) {
+    const cleaned = rawLine
+      .trim()
+      .replace(/,-?\d+$/, '')
+      .replace(/^"+|"+$/g, '')
+      .trim();
+    if (!cleaned) continue;
+    const dir = /\.exe$/i.test(cleaned) ? path.win32.dirname(cleaned) : cleaned;
+    if (dir && dir !== '.') dirs.push(dir);
+  }
+  return [...new Set(dirs)];
+}
+
+/**
+ * 在默认 ProgramFiles 找不到时查 Windows 注册表卸载项定位自定义安装目录。
+ * 走 PowerShell 而不是 reg.exe：部分企业环境通过组策略禁用 reg.exe
+ */
+function findWindowsRegistryDevtoolsDirs(): string[] {
+  if (cachedWindowsRegistryDirs) return cachedWindowsRegistryDirs;
+  const script = [
+    '[Console]::OutputEncoding=[Text.Encoding]::UTF8',
+    "$paths = 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*','HKLM:\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*','HKCU:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*'",
+    "Get-ItemProperty $paths -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -like '*微信*开发者工具*' } | ForEach-Object { $_.InstallLocation; $_.DisplayIcon; $_.UninstallString }"
+  ].join('; ');
+  try {
+    const out = execFileSync('powershell.exe', ['-NoProfile', '-Command', script], {
+      encoding: 'utf8',
+      timeout: 5000,
+      windowsHide: true
+    });
+    cachedWindowsRegistryDirs = parseWindowsRegistryInstallDirs(out);
+  } catch {
+    cachedWindowsRegistryDirs = [];
+  }
+  return cachedWindowsRegistryDirs;
+}
 
 /** 开发者工具放程序文件的目录（package.nw 或 app.asar.unpacked），编译器在里面的 node_modules/wcc-exec */
 export function findDevtoolsPackageDirs(): string[] {
@@ -39,11 +85,20 @@ export function findDevtoolsPackageDirs(): string[] {
       if (programFiles) roots.push(path.join(programFiles, 'Tencent', '微信web开发者工具'));
     }
   }
+  const collect = (dirs: string[]) =>
+    [...new Set(dirs)].filter(dir => fs.existsSync(path.join(dir, 'package.json')));
+
   for (const root of roots) {
     candidates.push(...PACKAGE_LAYOUTS.map(layout => path.join(root, layout)));
   }
+  const found = collect(candidates);
+  if (found.length > 0 || process.platform !== 'win32' || process.env.WXA_DEVTOOLS_PATH) return found;
 
-  return [...new Set(candidates)].filter(dir => fs.existsSync(path.join(dir, 'package.json')));
+  // 自定义安装盘符（如 D:\DevTools\...）不在 ProgramFiles 下时，回退查注册表
+  for (const root of findWindowsRegistryDevtoolsDirs()) {
+    candidates.push(...PACKAGE_LAYOUTS.map(layout => path.join(root, layout)));
+  }
+  return collect(candidates);
 }
 
 /**

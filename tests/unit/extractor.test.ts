@@ -11,7 +11,7 @@ import {
   selectBaseLib,
   usesIsolatedContext
 } from '../../packages/extractor/src/baselib';
-import { findDeveloperTicket, readRegionData, TICKET_ENV } from '../../packages/extractor/src/devtools';
+import { findDeveloperTicket, parseWindowsRegistryInstallDirs, readRegionData, TICKET_ENV } from '../../packages/extractor/src/devtools';
 import { readWxvpkgFile, readWxvpkgIndex } from '../../packages/extractor/src/wxvpkg';
 import { createProject, packAsar, packWxvpkg } from '../helpers';
 
@@ -240,5 +240,21 @@ describe('开发者工具登录态', () => {
     vi.stubEnv(TICKET_ENV, 'from-env');
     const dir = profile({ currentUser: { newticket: 'devtools', ticketExpiredTime: Date.now() + HOUR, loginStatus: 'SUCCESS' } });
     expect(findDeveloperTicket([dir])).toEqual({ newticket: 'from-env' });
+  });
+});
+
+describe('Windows 注册表开发者工具路径解析', () => {
+  it('从 InstallLocation / DisplayIcon / UninstallString 提取去重后的安装目录', () => {
+    const raw = [
+      '',
+      '"D:\\DevTools\\IDE\\微信web开发者工具\\微信开发者工具.exe",0',
+      'D:\\DevTools\\IDE\\微信web开发者工具\\卸载微信开发者工具.exe',
+      '  "E:\\WeChatDevTools"  '
+    ].join('\r\n');
+
+    expect(parseWindowsRegistryInstallDirs(raw)).toEqual([
+      'D:\\DevTools\\IDE\\微信web开发者工具',
+      'E:\\WeChatDevTools'
+    ]);
   });
 });

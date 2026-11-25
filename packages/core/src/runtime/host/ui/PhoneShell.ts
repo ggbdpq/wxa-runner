@@ -213,6 +213,25 @@ export class PhoneShell {
     this.backButton.addEventListener('click', handler);
   }
 
+  /** 在工具栏加入「保存会话」按钮，把当前浏览器 s0 Storage 写回用户级会话仓库 */
+  enableSaveSession(handler: () => Promise<void>) {
+    if (this.toolbar.querySelector('.wxa-save-session')) return;
+    const button = document.createElement('button');
+    button.className = 'wxa-scale wxa-save-session';
+    button.textContent = '存会话';
+    button.title = '保存当前小程序 Storage 到本机会话，供其他浏览器与自动化复现登录态';
+    button.addEventListener('click', async () => {
+      button.disabled = true;
+      try {
+        await handler();
+      } finally {
+        button.disabled = false;
+      }
+    });
+    const reload = this.toolbar.querySelector('.wxa-reload');
+    this.toolbar.insertBefore(button, reload);
+  }
+
   async transitionPages(previous: HTMLIFrameElement, current: HTMLIFrameElement, direction: 'push' | 'pop') {
     const navWasInert = this.navBar.inert;
     const tabsWereInert = this.tabBar.inert;

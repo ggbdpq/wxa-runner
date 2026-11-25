@@ -28,6 +28,8 @@ export interface WxaConfig {
   watch?: boolean;
   /** 小程序启动前执行的 setup 文件，默认使用项目目录下的 wxa.setup.ts / .js / .mjs；false 不执行 */
   setup?: string | false;
+  /** 用户级会话 Storage 名称（位于 ~/.wxa-runner/storage/<appid>/<profile>.json），默认 'default'；false 禁用（访客态） */
+  session?: string | false;
   /** 借本机微信开发者工具的登录态访问微信后台：真实的 code 和手机号、服务市场、插件 */
   devtoolsLogin?: boolean;
   /** true 时 console.warn / console.error 也转发到终端，false 时报错也不转发；默认只转发报错，检测到编程助手时全部转发 */
@@ -41,7 +43,7 @@ export interface WxaConfig {
 }
 
 const CONFIG_KEYS = new Set<string>([
-  'project', 'port', 'host', 'open', 'baselib', 'watch', 'setup', 'devtoolsLogin', 'forwardConsole', 'extensions', 'pageTransition', 'webViewWindow'
+  'project', 'port', 'host', 'open', 'baselib', 'watch', 'setup', 'session', 'devtoolsLogin', 'forwardConsole', 'extensions', 'pageTransition', 'webViewWindow'
 ] satisfies Array<keyof WxaConfig>);
 
 /** dir 下约定名称的配置文件，没有时为 null */

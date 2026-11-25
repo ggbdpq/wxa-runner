@@ -9,7 +9,8 @@ import { toJs } from '../project/toJs';
 import type { WebviewScript } from './DevServer';
 import { AppBuild, PluginCode, pluginScriptUrl } from './pluginCode';
 
-export function hostHtml(): string {
+export function hostHtml(runtimeVersion?: string | number): string {
+  const query = runtimeVersion ? `?v=${encodeURIComponent(String(runtimeVersion))}` : '';
   return `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -19,7 +20,7 @@ export function hostHtml(): string {
 </head>
 <body>
   <div id="wxa-root"></div>
-  <script src="/__wxa__/runtime/host.js"></script>
+  <script src="/__wxa__/runtime/host.js${query}"></script>
 </body>
 </html>`;
 }

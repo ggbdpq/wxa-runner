@@ -260,9 +260,32 @@ async function requestLoginCode(port: number): Promise<string> {
   return code;
 }
 
+/** 通过自动化协议读取开发者工具模拟器里的全部 s0 Storage，保留原生 JS 类型 */
+export async function pullDevtoolsStorage(projectPath: string, logger: Pick<Console, 'log'> = console): Promise<Record<string, unknown>> {
+  const cli = findElectronDevtoolsCli();
+  if (!cli) {
+    throw new Error('需要新版微信开发者工具（Electron）才能通过自动化接口拉取 Storage，请确认已安装微信开发者工具或设置 WXA_DEVTOOLS_PATH');
+  }
+  const port = await startAutomation(cli, projectPath);
+  logger.log(`[wxa-runner] 已连接微信开发者工具自动化接口（端口 ${port}），正在读取 Storage`);
+
+  return onceWindowReady(async () => {
+    const info = await sendCommand(port, 'App.callWxMethod', { method: 'getStorageInfoSync', args: [] }, LOGIN_TIMEOUT);
+    const keys: string[] = Array.isArray(info.result?.keys) ? info.result.keys : [];
+    const storage: Record<string, unknown> = {};
+    for (const key of keys) {
+      const item = await sendCommand(port, 'App.callWxMethod', { method: 'getStorageSync', args: [key] }, LOGIN_TIMEOUT);
+      if (item.result !== undefined) storage[key] = item.result;
+    }
+    return storage;
+  }, projectPath);
+}
+
 /** 开发者工具给的是英文，换成处理办法 */
 function explainAutomatorError(message: string): Error {
-  if (message.includes('GUI project window is not found')) return new WindowNotFound(message);
+  if (message.includes('GUI project window is not found') || message.includes('timeout waiting for automator response')) {
+    return new WindowNotFound(message);
+  }
   // 开发者工具先查后台下发的白名单，再查本机设置，两步失败的提示只差后半句
   if (message.includes('navigate to security settings')) {
     return new Error('微信开发者工具不允许获取登录票据，请在开发者工具「设置 → 安全设置」里打开「允许获取工具登录票据」');

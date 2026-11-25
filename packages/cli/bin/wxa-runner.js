@@ -28,6 +28,9 @@ program
   .option('-b, --baselib <version>', '基础库版本（默认使用本机已安装的最新兼容版本）')
   .option('--setup <file>', '小程序启动前执行的 setup 文件（默认使用项目目录下的 wxa.setup.ts / .js / .mjs）')
   .option('--no-setup', '不执行 setup 文件')
+  .option('--session [profile]', '使用用户级会话 Storage（位于 ~/.wxa-runner/storage/<appid>/<profile>.json，默认 default）')
+  .option('--no-session', '禁用用户级会话 Storage（以干净访客态启动）')
+  .option('--pull-devtools-storage', '启动前先从正在运行的微信开发者工具拉取 Storage 并保存到当前会话')
   .option('--no-watch', '不监听文件变化')
   .option('-o, --open', '启动后打开浏览器')
   .option('--forward-console', '浏览器里的 console.warn / console.error 也转发到终端（检测到编程助手时默认开启）')
@@ -37,7 +40,15 @@ program
   // 改在配置文件里写 webViewWindow，下个版本移除
   .addOption(new Option('--webview-window').hideHelp())
   .action(async (projectPath, options, command) => {
-    const { DevServer, findConfigFile, loadConfigFile } = require('@open-wxa/wxa-runner-core');
+    const {
+      DEFAULT_SESSION_PROFILE,
+      DevServer,
+      MiniProgram,
+      findConfigFile,
+      loadConfigFile,
+      pullDevtoolsStorage,
+      writeSessionStorage
+    } = require('@open-wxa/wxa-runner-core');
 
     try {
       const configFile = options.config ? path.resolve(options.config) : findConfigFile(process.cwd());
@@ -49,6 +60,16 @@ program
       const resolvedProjectPath = projectPath ? path.resolve(projectPath) : config.project;
       if (!resolvedProjectPath) throw new Error('缺少项目目录：写在命令行，如 wxa-runner dev .，或在配置文件 wxa.config.ts 里写 project');
       if (options.webviewWindow) console.warn(chalk.yellow('--webview-window 下个版本移除，请改在配置文件 wxa.config.ts 里写 webViewWindow: true'));
+
+      const rawSession = option('session');
+      const session = rawSession === false ? false : typeof rawSession === 'string' && rawSession ? rawSession : DEFAULT_SESSION_PROFILE;
+      if (options.pullDevtoolsStorage) {
+        if (session === false) throw new Error('--pull-devtools-storage 不能和 --no-session 同时使用');
+        const project = new MiniProgram(resolvedProjectPath);
+        const pulled = await pullDevtoolsStorage(project.projectPath, console);
+        const saved = writeSessionStorage(project.runtimeAppid, pulled, { profile: session, source: 'devtools' });
+        console.log(chalk.green(`  已从开发者工具同步 ${saved.keys.length} 项 Storage → 会话 ${saved.profile}（${saved.file}）`));
+      }
 
       const extensions = [];
       for (const [i, extension] of (config.extensions ?? []).entries()) {
@@ -67,6 +88,7 @@ program
         host: host === true ? '0.0.0.0' : host,
         baseLibVersion: option('baselib'),
         setup: option('setup'),
+        session,
         watch: option('watch'),
         pageTransition: config.pageTransition,
         devtoolsLogin: option('devtoolsLogin'),
@@ -92,6 +114,12 @@ program
       }
       console.log(`  基础库    ${server.baseLib.version}${server.baseLib.source === 'bundled' ? '（内置）' : ''}`);
       if (server.setupFile) console.log(`  setup     ${server.setupFile}`);
+      const sessionSummary = server.sessionSummary();
+      if (sessionSummary) {
+        console.log(`  会话      ${sessionSummary.profile}（${sessionSummary.keys} 项，${sessionSummary.file}）`);
+      } else if (server.sessionProfile === null) {
+        console.log(`  会话      ${chalk.gray('已禁用（--no-session）')}`);
+      }
       console.log('');
 
       // 有扩展页面时打开第一个：扩展页面通常把小程序嵌在里面
@@ -219,6 +247,86 @@ function loadViewer() {
     throw error;
   }
 }
+
+const sessionCmd = program.command('session').description('管理用户级小程序 Storage 会话（~/.wxa-runner/storage/<appid>/）');
+
+sessionCmd
+  .command('pull [project-path]')
+  .description('通过自动化接口从微信开发者工具拉取当前项目 Storage 并保存为会话')
+  .option('--profile <name>', '会话名（默认 default）', 'default')
+  .action(async (projectPath = '.', options) => {
+    const { MiniProgram, pullDevtoolsStorage, writeSessionStorage } = require('@open-wxa/wxa-runner-core');
+    try {
+      const project = new MiniProgram(path.resolve(projectPath));
+      const storage = await pullDevtoolsStorage(project.projectPath, console);
+      const saved = writeSessionStorage(project.runtimeAppid, storage, { profile: options.profile, source: 'devtools' });
+      console.log(`${chalk.green('✓')} 已保存 ${saved.keys.length} 项 Storage（appid: ${project.runtimeAppid}，会话: ${saved.profile}）`);
+      console.log(`  路径  ${chalk.cyan(saved.file)}`);
+      if (saved.keys.length) console.log(`  键名  ${saved.keys.join(', ')}`);
+    } catch (error) {
+      console.error(chalk.red('\n拉取失败：'), error.message);
+      process.exit(1);
+    }
+  });
+
+sessionCmd
+  .command('list [project-path]')
+  .description('列出当前项目已保存的会话（不输出键值）')
+  .action((projectPath = '.') => {
+    const { MiniProgram, listSessionProfiles } = require('@open-wxa/wxa-runner-core');
+    try {
+      const project = new MiniProgram(path.resolve(projectPath));
+      const profiles = listSessionProfiles(project.runtimeAppid);
+      if (profiles.length === 0) {
+        console.log(chalk.gray(`appid ${project.runtimeAppid} 尚未保存会话`));
+        return;
+      }
+      for (const item of profiles) {
+        const meta = [item.source, item.updatedAt].filter(Boolean).join(' · ');
+        console.log(`  ${chalk.cyan(item.profile)}  ${item.keys} 项${meta ? chalk.gray(` (${meta})`) : ''}`);
+      }
+    } catch (error) {
+      console.error(chalk.red('\n读取失败：'), error.message);
+      process.exit(1);
+    }
+  });
+
+sessionCmd
+  .command('import <json-file> [project-path]')
+  .description('从本地 JSON 文件导入 Storage 会话（适合 CI 或无开发者工具环境）')
+  .option('--profile <name>', '会话名（默认 default）', 'default')
+  .action((jsonFile, projectPath = '.', options) => {
+    const fs = require('fs');
+    const { MiniProgram, writeSessionStorage } = require('@open-wxa/wxa-runner-core');
+    try {
+      const project = new MiniProgram(path.resolve(projectPath));
+      const parsed = JSON.parse(fs.readFileSync(path.resolve(jsonFile), 'utf8'));
+      const storage = parsed && typeof parsed === 'object' && parsed.storage && typeof parsed.storage === 'object' && !Array.isArray(parsed.storage)
+        ? parsed.storage
+        : parsed;
+      const saved = writeSessionStorage(project.runtimeAppid, storage, { profile: options.profile, source: 'import' });
+      console.log(`${chalk.green('✓')} 已导入 ${saved.keys.length} 项 Storage → ${chalk.cyan(saved.file)}`);
+    } catch (error) {
+      console.error(chalk.red('\n导入失败：'), error.message);
+      process.exit(1);
+    }
+  });
+
+sessionCmd
+  .command('clear [project-path]')
+  .description('删除当前项目指定的会话')
+  .option('--profile <name>', '会话名（默认 default）', 'default')
+  .action((projectPath = '.', options) => {
+    const { MiniProgram, clearSessionStorage } = require('@open-wxa/wxa-runner-core');
+    try {
+      const project = new MiniProgram(path.resolve(projectPath));
+      const removed = clearSessionStorage(project.runtimeAppid, options.profile);
+      console.log(removed ? `${chalk.green('✓')} 已清除会话 ${options.profile}（appid: ${project.runtimeAppid}）` : chalk.gray(`会话 ${options.profile} 不存在`));
+    } catch (error) {
+      console.error(chalk.red('\n清除失败：'), error.message);
+      process.exit(1);
+    }
+  });
 
 const baselib = program.command('baselib').description('管理官方基础库');
 

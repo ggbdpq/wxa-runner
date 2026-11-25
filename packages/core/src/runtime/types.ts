@@ -70,6 +70,8 @@ export interface AppInfo {
   buildError?: string;
   /** 配置了 setup 文件时存在；error 是 setup 的编译错误 */
   setup?: { env: Record<string, string>; error?: string };
+  /** 开启了用户级会话 Storage 预注入（实际数据走仅限本机访问的 /__wxa__/session 接口） */
+  session?: { profile: string };
   /** 没有时不转发 */
   forwardConsole?: ForwardConsole;
   /** web-view 的网页在新窗口打开，见 api/webView.ts 的 WebViewWindows */

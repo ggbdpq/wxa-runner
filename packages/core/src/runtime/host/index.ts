@@ -4,6 +4,7 @@
 
 import type { AppInfo } from '../types';
 import type { ConsoleReport } from './ConsoleForwarder';
+import { decodeStorageValue, encodeStorageValue } from './api/storage';
 import { Host, LaunchTarget } from './Host';
 import { applyHotUpdate, HotUpdate } from './hmr';
 import { PageStackRestore } from './pageStackRestore';
@@ -34,11 +35,61 @@ async function main() {
   });
   const testApi = installTestApi(host, ready);
 
+  if (info.session) await applySessionStorage(host, info.session);
+  if (info.session && info.liveReload !== false) {
+    host.shell.enableSaveSession(() => saveSessionStorage(host, info.session!.profile));
+  }
   if (info.setup && !(await runSetup(host, info.setup))) return;
   if (!(await runBeforeLaunch(host, testApi))) return;
   await host.start(restore.launchTarget(info.pages, launchTarget(info)));
   await restore.reopen(host);
   markReady();
+}
+
+/**
+ * 在 setup 和逻辑层创建前注入用户级会话 Storage（~/.wxa-runner/storage/<appid>/<profile>.json）。
+ * 接口仅允许本机访问：局域网打开时返回 403，直接跳过不阻断启动
+ */
+async function applySessionStorage(host: Host, session: NonNullable<AppInfo['session']>): Promise<void> {
+  try {
+    const res = await fetch('/__wxa__/session');
+    if (!res.ok) return;
+    const payload = await res.json();
+    const storage = payload?.storage;
+    if (!storage || typeof storage !== 'object' || Array.isArray(storage)) return;
+    const keys: string[] = [];
+    for (const [key, value] of Object.entries(storage)) {
+      try {
+        const encoded = encodeStorageValue(value);
+        host.storage.set('s0', key, encoded.data, encoded.dataType);
+        keys.push(key);
+      } catch (error) {
+        console.warn(`[wxa-runner] 跳过无法写入的会话键 ${key}：${(error as Error).message}`);
+      }
+    }
+    if (keys.length) console.info(`[wxa-runner] 会话 ${session.profile} 已预置 ${keys.length} 项 Storage（${keys.join(', ')}）`);
+  } catch (error) {
+    console.warn('[wxa-runner] 读取会话 Storage 失败，跳过预置', error);
+  }
+}
+
+async function saveSessionStorage(host: Host, profile: string): Promise<void> {
+  const storage: Record<string, unknown> = {};
+  for (const key of host.storage.keys('s0')) {
+    const item = host.storage.get('s0', key);
+    if (item) storage[key] = decodeStorageValue(item);
+  }
+  const res = await fetch('/__wxa__/session', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ storage })
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    host.shell.showNotice('保存会话失败', body.error || `HTTP ${res.status}`);
+    return;
+  }
+  host.shell.showNotice('会话已保存', `已保存 ${Array.isArray(body.keys) ? body.keys.length : Object.keys(storage).length} 项 Storage 到会话 ${profile}`);
 }
 
 /**

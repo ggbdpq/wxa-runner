@@ -49,6 +49,7 @@ import { planHotUpdate } from './hmr';
 import { DevtoolsSession, devtoolsSession, TicketNotAllowed, TicketSource } from './developerTicket';
 import { AppBuild, PluginStore } from './plugins';
 import { devtoolsLoginRouter } from './devtoolsLogin';
+import { DEFAULT_SESSION_PROFILE, readSessionStorage, sessionFilePath, sessionRouter } from './sessionStore';
 import { requireUsableTicket, WechatDevClient } from './wechatDev';
 import { bundleSetup, collectSetupEnv, findSetupFile } from './setup';
 import { ProjectWatcher, watchProject } from './watcher';
@@ -98,6 +99,12 @@ export interface DevServerOptions {
    * 环境变量在构造时读取，只暴露 WXA_ 前缀的变量
    */
   setup?: string | false;
+  /**
+   * 用户级会话 Storage 名称（~/.wxa-runner/storage/<appid>/<profile>.json）；默认 'default'，传 false 禁用（访客态）
+   */
+  session?: string | false;
+  /** 覆盖用户级会话目录，便于测试隔离 */
+  sessionDir?: string;
   /** 浏览器端运行时（host.js / frame.js）所在目录，默认取构建产物 */
   runtimeDir?: string;
   /**
@@ -137,6 +144,8 @@ export class DevServer {
   readonly baseLib: ResolvedBaseLib;
   /** 生效的 setup 文件绝对路径，没有时为 null */
   readonly setupFile: string | null;
+  /** 启用的用户级会话名，false 禁用时为 null */
+  readonly sessionProfile: string | null;
   /** 扩展提供的页面，按扩展的顺序 */
   readonly extensionEntries: ExtensionEntry[];
   private readonly setupEnv: Record<string, string>;
@@ -200,8 +209,27 @@ export class DevServer {
     this.device = { ...DEFAULT_DEVICE, ...options.device };
     this.builder = new AppBuilder(this.project, { wxmlTransform: extended.wxmlTransform });
     this.setupFile = resolveSetupFile(options.setup, this.project.projectPath);
+    this.sessionProfile = options.session === false ? null : (options.session || DEFAULT_SESSION_PROFILE);
     this.setupEnv = collectSetupEnv(process.env);
     this.app = this.createApp();
+  }
+
+  /** 当前启用会话的摘要信息；未启用或尚未保存过时返回 null */
+  sessionSummary(): { profile: string; file: string; keys: number; source: string } | null {
+    if (!this.sessionProfile) return null;
+    try {
+      const appid = this.project.runtimeAppid;
+      const record = readSessionStorage(appid, this.sessionProfile, this.options.sessionDir);
+      if (!record) return null;
+      return {
+        profile: this.sessionProfile,
+        file: sessionFilePath(appid, this.sessionProfile, this.options.sessionDir),
+        keys: Object.keys(record.storage).length,
+        source: record.source
+      };
+    } catch {
+      return null;
+    }
   }
 
   /** 本机访问的地址 */
@@ -306,7 +334,9 @@ export class DevServer {
 
     app.get('/', (_req, res) => {
       noStore(res);
-      res.type('html').send(hostHtml());
+      const hostScript = path.join(this.runtimeDir(), 'host.js');
+      const version = fs.existsSync(hostScript) ? Math.trunc(fs.statSync(hostScript).mtimeMs) : undefined;
+      res.type('html').send(hostHtml(version));
     });
 
     app.get('/favicon.ico', (_req, res) => {
@@ -333,7 +363,8 @@ export class DevServer {
           appid: this.project.runtimeAppid,
           version: build.version,
           wxConfig: build.wxConfig,
-          pages: build.pages
+          pages: build.pages,
+          ...(this.sessionProfile ? { session: { profile: this.sessionProfile } } : {})
         };
         if (this.setupFile) info.setup = await this.setupInfo(this.setupFile);
         res.json(info);
@@ -370,8 +401,10 @@ export class DevServer {
     });
     app.use('/__wxa__/runtime', express.static(this.runtimeDir(), {
       cacheControl: false,
-      // Service Worker 默认只能接管自己所在目录下的页面，宿主页面在根路径
       setHeaders: (res, file) => {
+        // 避免不带 Cache-Control 时浏览器按启发式强缓存旧版 host.js / frame.js
+        res.setHeader('Cache-Control', 'no-cache');
+        // Service Worker 默认只能接管自己所在目录下的页面，宿主页面在根路径
         if (path.basename(file) === 'sw.js') res.setHeader('Service-Worker-Allowed', '/');
       }
     }));
@@ -485,6 +518,12 @@ export class DevServer {
         res.status(404).end();
       }
     });
+
+    if (this.sessionProfile) {
+      app.use('/__wxa__/session', (req, res, next) => {
+        sessionRouter(this.project.runtimeAppid, this.sessionProfile!, { baseDir: this.options.sessionDir })(req, res, next);
+      });
+    }
 
     // 登录票据属于开发者工具当前登录的账号和它打开的项目（project.config.json 的 appid）。
     // 三方平台代开发时项目 appid 是服务商模板 appid，jslogin 产出的 code 属于它，换不了授权方的登录态，
